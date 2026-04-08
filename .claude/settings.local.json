@@ -9,7 +9,8 @@
       "Bash(npm --version)",
       "Bash(cmd.exe /c \"npm --version\")",
       "Bash(powershell.exe -Command \"npm --version\")",
-      "Bash(powershell.exe -Command \"node --version; npm --version\")"
+      "Bash(powershell.exe -Command \"node --version; npm --version\")",
+      "Bash(powershell.exe -Command \"Get-Command node -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source; Get-Command npm -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source\")"
     ]
   }
 }
