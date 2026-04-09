@@ -86,6 +86,10 @@ export default function App() {
             // Validate room exists before moving to name screen
             try {
               const names = await gameState.getExistingNames(code)
+              if (names.length === 0) {
+                setJoinError('Room not found')
+                return
+              }
               setExistingNames(names)
               setPendingRoomCode(code)
               setJoinError(null)

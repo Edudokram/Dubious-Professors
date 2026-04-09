@@ -15,7 +15,7 @@ function randomCode() {
 
 export function generateRoomCode() {
   const roll = Math.random()
-  if (roll < 0.34) {
+  if (roll < 0.5) {
     return CODES[Math.floor(Math.random() * CODES.length)]
   }
   return randomCode()
