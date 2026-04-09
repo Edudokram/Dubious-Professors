@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { usePlayer } from './hooks/usePlayer'
 import { useGameState } from './hooks/useGameState'
 
@@ -14,55 +14,41 @@ import InterrogationScreen from './screens/InterrogationScreen'
 import GuessScreen from './screens/GuessScreen'
 import ResultsScreen from './screens/ResultsScreen'
 import HowToPlayScreen from './screens/HowToPlayScreen'
-import PausedScreen from './screens/PausedScreen'
+import Layout from './components/Layout'
 
 export default function App() {
   const { playerId, playerName, setPlayerName, roomCode, setRoomCode, clearSession } = usePlayer()
   const gameState = useGameState(playerId, roomCode)
 
-  // Local UI state for pre-game navigation
   const [screen, setScreen] = useState('home')
   const [pendingSettings, setPendingSettings] = useState(null)
   const [joinError, setJoinError] = useState(null)
-  const [selectedArticle, setSelectedArticle] = useState(null) // { title, url }
+  const [selectedArticle, setSelectedArticle] = useState(null)
+  const [pendingRoomCode, setPendingRoomCode] = useState(null)
+  const [existingNames, setExistingNames] = useState([])
+  const [cachedArticles, setCachedArticles] = useState([])
 
-  const { room, myPlayer, isHost, playerList, connectedPlayers } = gameState
+  const { room, loading, myPlayer, isHost, isInterrogator, playerList, connectedPlayers } = gameState
+  const advancingRef = useRef(false)
 
-  // Watch for disconnect events and pause game
+  // If room disappears (destroyed/ended), go home — but only after we've actually loaded once
   useEffect(() => {
-    if (!room || !isHost || room.phase === 'lobby' || room.phase === 'paused' || room.phase === 'results') return
-
-    const disconnected = playerList.find(p => p.connected === false && p.id !== playerId)
-    if (disconnected) {
-      gameState.pauseGame(roomCode, disconnected.id, room.phase)
+    if (roomCode && !room && !loading && gameState.hasLoaded) {
+      sessionStorage.removeItem('dp_rejoinCode')
+      sessionStorage.removeItem('dp_rejoinTime')
+      clearSession()
+      setScreen('home')
     }
-  }, [room, isHost, playerList, roomCode, playerId])
+  }, [room, roomCode, loading])
 
-  // Watch for pause timeout (3 minutes)
-  useEffect(() => {
-    if (!room || room.phase !== 'paused' || !isHost) return
+  // Check if there's a rejoinable room (within 3 minutes)
+  const rejoinCode = sessionStorage.getItem('dp_rejoinCode')
+  const rejoinTime = parseInt(sessionStorage.getItem('dp_rejoinTime') || '0', 10)
+  const canRejoin = Boolean(rejoinCode) && (Date.now() - rejoinTime < 3 * 60 * 1000)
 
-    const interval = setInterval(() => {
-      if (room.pausedAt) {
-        const elapsed = Date.now() - room.pausedAt
-        if (elapsed >= 3 * 60 * 1000) {
-          // Timeout — end the game
-          gameState.endRound(roomCode).then(result => {
-            if (result === 'home') {
-              clearSession()
-              setScreen('home')
-            }
-          })
-        }
-      }
-    }, 5000)
+  // --- PRE-GAME SCREENS ---
 
-    return () => clearInterval(interval)
-  }, [room, isHost, roomCode])
-
-  // --- PRE-GAME SCREENS (no room yet) ---
-
-  if (!roomCode || !room) {
+  if (!roomCode || (!room && !loading)) {
     if (screen === 'howToPlay') {
       return <HowToPlayScreen onBack={() => setScreen('home')} />
     }
@@ -72,13 +58,8 @@ export default function App() {
         <SettingsScreen
           onStart={(settings) => {
             setPendingSettings(settings)
-            if (settings.randomRoles || playerName) {
-              // Random roles: skip name entry, use existing name or prompt
-              if (playerName) {
-                handleCreateRoom(playerName, settings)
-              } else {
-                setScreen('enterName-host')
-              }
+            if (settings.randomRoles && playerName) {
+              handleCreateRoom(playerName, settings)
             } else {
               setScreen('enterName-host')
             }
@@ -97,23 +78,35 @@ export default function App() {
       )
     }
 
-    if (screen === 'enterName-join') {
+    // Join flow: code first
+    if (screen === 'enterCode') {
       return (
-        <EnterNameScreen
-          onSubmit={(name) => {
-            setPlayerName(name)
-            setScreen('enterCode')
+        <EnterCodeScreen
+          onJoin={async (code) => {
+            // Validate room exists before moving to name screen
+            try {
+              const names = await gameState.getExistingNames(code)
+              setExistingNames(names)
+              setPendingRoomCode(code)
+              setJoinError(null)
+              setScreen('enterName-join')
+            } catch (err) {
+              setJoinError('Room not found')
+            }
           }}
-          onCancel={() => setScreen('home')}
+          onCancel={() => { setScreen('home'); setJoinError(null) }}
+          error={joinError}
         />
       )
     }
 
-    if (screen === 'enterCode') {
+    // Join flow: then name
+    if (screen === 'enterName-join') {
       return (
-        <EnterCodeScreen
-          onJoin={handleJoinRoom}
-          onCancel={() => setScreen('home')}
+        <EnterNameScreen
+          onSubmit={(name) => handleJoinRoom(pendingRoomCode, name)}
+          onCancel={() => { setScreen('enterCode'); setJoinError(null) }}
+          existingNames={existingNames}
           error={joinError}
         />
       )
@@ -122,87 +115,98 @@ export default function App() {
     return (
       <HomeScreen
         onStartGame={() => setScreen('settings')}
-        onJoinGame={() => {
-          if (playerName) {
-            setScreen('enterCode')
-          } else {
-            setScreen('enterName-join')
-          }
-        }}
+        onJoinGame={() => setScreen('enterCode')}
         onHowToPlay={() => setScreen('howToPlay')}
+        canRejoin={canRejoin}
         onRejoin={handleRejoin}
       />
     )
   }
 
-  // --- IN-GAME SCREENS (room exists, phase-driven) ---
-
-  const phase = room.phase
-
-  if (phase === 'paused') {
-    const disconnectedPlayer = playerList.find(p => p.id === room.disconnectedPlayerId)
+  // Loading state while Firebase subscription connects
+  if (loading && !room) {
     return (
-      <PausedScreen
-        pausedAt={room.pausedAt}
-        disconnectedPlayerName={disconnectedPlayer?.name}
-      />
+      <Layout>
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-[#666] text-sm animate-fade-in">Connecting...</p>
+        </div>
+      </Layout>
     )
   }
 
+  // --- IN-GAME SCREENS ---
+
+  // Guard: if player data hasn't loaded yet, wait
+  if (!myPlayer) {
+    return (
+      <Layout>
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-[#666] text-sm animate-fade-in">Loading...</p>
+        </div>
+      </Layout>
+    )
+  }
+
+  const phase = room.phase
+
   if (phase === 'lobby') {
+    // Clear stale state from previous round
+    if (selectedArticle) setSelectedArticle(null)
+    if (cachedArticles.length > 0) setCachedArticles([])
+
     return (
       <LobbyScreen
         roomCode={roomCode}
         players={connectedPlayers}
         isHost={isHost}
-        onBeginGame={() => gameState.beginGame(roomCode)}
+        onBeginGame={() => gameState.beginGame(roomCode, room.settings.randomRoles)}
       />
     )
   }
 
   if (phase === 'article-selection') {
-    const isInterrogator = !room.settings.randomRoles && isHost
+    // Check if all professors ready BEFORE any early returns —
+    // host might be a professor in random roles mode
+    const professors = playerList.filter(p => p.role !== 'interrogator')
+    const allReady = professors.length > 0 && professors.every(p => p.isReady)
 
-    // If player has selected an article but not yet marked ready, show the article
-    if (selectedArticle && !myPlayer.isReady && !isInterrogator) {
+    if (allReady && isInterrogator && !advancingRef.current) {
+      advancingRef.current = true
+      gameState.startRoleReveal(roomCode).finally(() => {
+        advancingRef.current = false
+      })
+    }
+
+    // Reading an article (before or after ready)
+    if (selectedArticle && !isInterrogator) {
       return (
         <ArticleReadScreen
           title={selectedArticle.title}
           url={selectedArticle.url}
           onBack={() => setSelectedArticle(null)}
-          onReady={() => {
-            gameState.setReady(roomCode)
-          }}
+          onReady={myPlayer.isReady ? null : () => gameState.setReady(roomCode)}
         />
       )
     }
 
-    // If already ready, show waiting
-    if (myPlayer.isReady && !isInterrogator) {
+    // Already ready — show waiting view (same as interrogator view)
+    if ((myPlayer.isReady && !isInterrogator) || isInterrogator) {
       return (
         <ArticleSelectScreen
           isInterrogator={true}
           players={playerList}
+          myArticle={!isInterrogator ? { title: myPlayer.articleTitle, url: myPlayer.articleUrl } : null}
+          onViewArticle={(article) => setSelectedArticle(article)}
         />
       )
     }
 
-    // Check if all professors are ready (host auto-advances)
-    const professors = playerList.filter(p => {
-      if (!room.settings.randomRoles) return p.id !== room.hostId
-      return true // in random roles mode, everyone is a professor during article selection
-    })
-    const allReady = professors.length > 0 && professors.every(p => p.isReady)
-
-    if (allReady && isHost) {
-      // Auto advance to role reveal
-      gameState.startRoleReveal(roomCode)
-    }
-
     return (
       <ArticleSelectScreen
-        isInterrogator={isInterrogator}
+        isInterrogator={false}
         players={playerList}
+        cachedArticles={cachedArticles}
+        onCacheArticles={setCachedArticles}
         onSelect={(title, url) => {
           gameState.selectArticle(roomCode, title, url)
           setSelectedArticle({ title, url })
@@ -212,21 +216,17 @@ export default function App() {
   }
 
   if (phase === 'role-reveal') {
-    const interrogatorPlayer = playerList.find(p => p.role === 'interrogator')
-    const isInterrogator = interrogatorPlayer?.id === playerId
-
     return (
       <RoleRevealScreen
         myPlayer={myPlayer}
         selectedArticleTitle={room.selectedArticleTitle}
-        isHost={isHost}
+        isInterrogator={isInterrogator}
         onContinue={() => gameState.advancePhase(roomCode, 'interrogation-1')}
       />
     )
   }
 
   if (phase === 'interrogation-1' || phase === 'interrogation-2') {
-    const isInterrogator = myPlayer.role === 'interrogator'
     const nextPhase = phase === 'interrogation-1' ? 'interrogation-2' : 'guessing'
 
     return (
@@ -234,7 +234,6 @@ export default function App() {
         phase={phase}
         myPlayer={myPlayer}
         selectedArticleTitle={room.selectedArticleTitle}
-        timerOn={room.settings.timerOn}
         isInterrogator={isInterrogator}
         onDone={() => gameState.advancePhase(roomCode, nextPhase)}
       />
@@ -242,7 +241,6 @@ export default function App() {
   }
 
   if (phase === 'guessing') {
-    const isInterrogator = myPlayer.role === 'interrogator'
     const professors = playerList.filter(p => p.role !== 'interrogator')
 
     return (
@@ -260,14 +258,16 @@ export default function App() {
         myPlayer={myPlayer}
         guess={room.guess}
         players={playerList}
-        isHost={isHost}
+        isInterrogator={isInterrogator}
         onEndRound={() => {
           gameState.endRound(roomCode).then(result => {
             if (result === 'home') {
+              sessionStorage.removeItem('dp_rejoinCode')
               clearSession()
               setScreen('home')
             } else {
               setSelectedArticle(null)
+              setCachedArticles([])
             }
           })
         }}
@@ -275,7 +275,6 @@ export default function App() {
     )
   }
 
-  // Fallback
   return null
 
   // --- HANDLERS ---
@@ -284,33 +283,41 @@ export default function App() {
     setPlayerName(name)
     try {
       const code = await gameState.createRoom(name, settings)
+      sessionStorage.setItem('dp_rejoinCode', code)
+      sessionStorage.setItem('dp_rejoinTime', Date.now().toString())
       setRoomCode(code)
-      setScreen('lobby')
     } catch (err) {
       console.error('Failed to create room:', err)
     }
   }
 
-  async function handleJoinRoom(code) {
+  async function handleJoinRoom(code, name) {
     setJoinError(null)
     try {
-      await gameState.joinRoom(code, playerName)
+      await gameState.joinRoom(code, name)
+      setPlayerName(name)
+      sessionStorage.setItem('dp_rejoinCode', code)
+      sessionStorage.setItem('dp_rejoinTime', Date.now().toString())
       setRoomCode(code)
     } catch (err) {
       setJoinError(err.message)
+      // If name error, stay on name screen. If room error, go back to code.
+      if (err.message === 'Room not found' || err.message === 'Game already in progress') {
+        setScreen('enterCode')
+      }
     }
   }
 
   async function handleRejoin() {
-    const storedCode = sessionStorage.getItem('dp_roomCode')
+    const storedCode = sessionStorage.getItem('dp_rejoinCode')
     if (!storedCode) return
 
     try {
       await gameState.rejoinRoom(storedCode)
       setRoomCode(storedCode)
     } catch (err) {
-      sessionStorage.removeItem('dp_roomCode')
-      setJoinError(err.message)
+      sessionStorage.removeItem('dp_rejoinCode')
+      console.error('Rejoin failed:', err)
     }
   }
 }

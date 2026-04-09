@@ -1,75 +1,91 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { db, ref, set, get, update, onValue, onDisconnect, remove, serverTimestamp } from '../firebase'
 import { generateRoomCode } from '../lib/roomCode'
-import { assignRoles } from '../lib/roles'
 
 export function useGameState(playerId, roomCode) {
   const [room, setRoom] = useState(null)
+  const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const hasLoadedOnce = useRef(false)
 
   // Subscribe to room state
   useEffect(() => {
     if (!roomCode) {
       setRoom(null)
+      setLoading(false)
+      hasLoadedOnce.current = false
       return
     }
+
+    setLoading(true)
+    hasLoadedOnce.current = false
 
     const roomRef = ref(db, `rooms/${roomCode}`)
     const unsub = onValue(roomRef, (snapshot) => {
       const data = snapshot.val()
+      hasLoadedOnce.current = true
+      setLoading(false)
       if (!data) {
         setRoom(null)
-        setError('Room not found')
         return
       }
       setRoom(data)
       setError(null)
     }, (err) => {
+      setLoading(false)
+      hasLoadedOnce.current = true
       setError(err.message)
     })
 
     return () => unsub()
   }, [roomCode])
 
-  // Set up presence tracking when in a room
+  // Presence tracking — re-establishes onDisconnect hooks after reconnect
   useEffect(() => {
     if (!roomCode || !playerId) return
 
     const playerConnRef = ref(db, `rooms/${roomCode}/players/${playerId}/connected`)
     const playerLastSeenRef = ref(db, `rooms/${roomCode}/players/${playerId}/lastSeen`)
+    const connectedRef = ref(db, '.info/connected')
 
-    set(playerConnRef, true)
-    set(playerLastSeenRef, serverTimestamp())
+    function setupPresence() {
+      set(playerConnRef, true).catch(() => {})
+      set(playerLastSeenRef, serverTimestamp()).catch(() => {})
+      onDisconnect(playerConnRef).set(false)
+      onDisconnect(playerLastSeenRef).set(serverTimestamp())
+    }
 
-    // On disconnect, mark as disconnected
-    onDisconnect(playerConnRef).set(false)
-    onDisconnect(playerLastSeenRef).set(serverTimestamp())
+    // Re-setup presence every time Firebase reconnects
+    const unsub = onValue(connectedRef, (snap) => {
+      if (snap.val() === true) {
+        setupPresence()
+      }
+    })
 
     // Heartbeat
     const interval = setInterval(() => {
-      set(playerLastSeenRef, serverTimestamp())
+      set(playerLastSeenRef, serverTimestamp()).catch(() => {})
     }, 15000)
 
-    return () => clearInterval(interval)
+    return () => {
+      unsub()
+      clearInterval(interval)
+    }
   }, [roomCode, playerId])
 
-  // Create a new room
   const createRoom = useCallback(async (hostName, settings) => {
     const code = generateRoomCode()
     const roomRef = ref(db, `rooms/${code}`)
 
-    // Check code doesn't already exist
     const existing = await get(roomRef)
     if (existing.exists()) {
-      // Extremely unlikely collision, just retry
       return createRoom(hostName, settings)
     }
 
     await set(roomRef, {
       settings: {
-        timerOn: settings.timerOn || false,
         randomRoles: settings.randomRoles || false,
-        keepLobby: settings.keepLobby || false,
+        keepLobby: true,
       },
       phase: 'lobby',
       hostId: playerId,
@@ -83,19 +99,17 @@ export function useGameState(playerId, roomCode) {
           role: '',
           connected: true,
           lastSeen: serverTimestamp(),
+          joinedAt: serverTimestamp(),
         }
       },
       selectedArticleTitle: '',
       guess: null,
-      pausedAt: null,
-      previousPhase: null,
-      disconnectedPlayerId: null,
+      disconnectTimers: null,
     })
 
     return code
   }, [playerId])
 
-  // Join an existing room
   const joinRoom = useCallback(async (code, playerName) => {
     const roomRef = ref(db, `rooms/${code}`)
     const snapshot = await get(roomRef)
@@ -109,6 +123,12 @@ export function useGameState(playerId, roomCode) {
       throw new Error('Game already in progress')
     }
 
+    // Check for duplicate names
+    const existingNames = Object.values(data.players || {}).map(p => p.name.toLowerCase())
+    if (existingNames.includes(playerName.toLowerCase())) {
+      throw new Error('Name already taken')
+    }
+
     await set(ref(db, `rooms/${code}/players/${playerId}`), {
       name: playerName,
       isReady: false,
@@ -117,13 +137,28 @@ export function useGameState(playerId, roomCode) {
       role: '',
       connected: true,
       lastSeen: serverTimestamp(),
+      joinedAt: serverTimestamp(),
     })
 
     return code
   }, [playerId])
 
-  // Rejoin a room after disconnect
+  const getExistingNames = useCallback(async (code) => {
+    const roomRef = ref(db, `rooms/${code}`)
+    const snapshot = await get(roomRef)
+    if (!snapshot.exists()) return []
+    const data = snapshot.val()
+    return Object.values(data.players || {}).map(p => p.name)
+  }, [])
+
   const rejoinRoom = useCallback(async (code) => {
+    // First check if room still exists
+    const roomRef = ref(db, `rooms/${code}`)
+    const roomSnap = await get(roomRef)
+    if (!roomSnap.exists()) {
+      throw new Error('Room no longer exists')
+    }
+
     const playerRef = ref(db, `rooms/${code}/players/${playerId}`)
     const snapshot = await get(playerRef)
 
@@ -136,31 +171,49 @@ export function useGameState(playerId, roomCode) {
       lastSeen: serverTimestamp(),
     })
 
-    // If game was paused for this player, unpause
-    const roomRef = ref(db, `rooms/${code}`)
-    const roomSnap = await get(roomRef)
-    const roomData = roomSnap.val()
-
-    if (roomData.phase === 'paused' && roomData.disconnectedPlayerId === playerId) {
-      await update(roomRef, {
-        phase: roomData.previousPhase,
-        pausedAt: null,
-        previousPhase: null,
-        disconnectedPlayerId: null,
-      })
-    }
+    // Clear disconnect timer for this player
+    await remove(ref(db, `rooms/${code}/disconnectTimers/${playerId}`))
 
     return code
   }, [playerId])
 
-  // Begin the game (host only)
-  const beginGame = useCallback(async (code) => {
-    await update(ref(db, `rooms/${code}`), {
-      phase: 'article-selection',
-    })
+  const beginGame = useCallback(async (code, randomRoles) => {
+    if (randomRoles) {
+      // Assign interrogator now, before article selection
+      const roomRef = ref(db, `rooms/${code}`)
+      const snapshot = await get(roomRef)
+      const data = snapshot.val()
+      const playerIds = Object.keys(data.players)
+
+      const interrogatorId = playerIds[Math.floor(Math.random() * playerIds.length)]
+
+      const updates = {
+        phase: 'article-selection',
+      }
+      // Set everyone's role: interrogator for the chosen one, clear for others
+      for (const pid of playerIds) {
+        updates[`players/${pid}/role`] = pid === interrogatorId ? 'interrogator' : ''
+      }
+
+      await update(roomRef, updates)
+    } else {
+      // Host is interrogator
+      const roomRef = ref(db, `rooms/${code}`)
+      const snapshot = await get(roomRef)
+      const data = snapshot.val()
+      const playerIds = Object.keys(data.players)
+
+      const updates = {
+        phase: 'article-selection',
+      }
+      for (const pid of playerIds) {
+        updates[`players/${pid}/role`] = pid === data.hostId ? 'interrogator' : ''
+      }
+
+      await update(roomRef, updates)
+    }
   }, [])
 
-  // Set player's chosen article
   const selectArticle = useCallback(async (code, title, url) => {
     await update(ref(db, `rooms/${code}/players/${playerId}`), {
       articleTitle: title,
@@ -169,45 +222,42 @@ export function useGameState(playerId, roomCode) {
     })
   }, [playerId])
 
-  // Mark player as ready (done reading article)
   const setReady = useCallback(async (code) => {
     await update(ref(db, `rooms/${code}/players/${playerId}`), {
       isReady: true,
     })
   }, [playerId])
 
-  // Assign roles and advance to role reveal (host only)
   const startRoleReveal = useCallback(async (code) => {
     const roomRef = ref(db, `rooms/${code}`)
     const snapshot = await get(roomRef)
     const data = snapshot.val()
 
-    const { playerUpdates, selectedArticleTitle } = assignRoles(
-      data.players,
-      data.hostId,
-      data.settings.randomRoles
-    )
+    // Interrogator is already assigned. Now pick truthful from the professors.
+    const playerIds = Object.keys(data.players)
+    const professorIds = playerIds.filter(id => data.players[id].role !== 'interrogator')
+
+    const truthfulIdx = Math.floor(Math.random() * professorIds.length)
+    const truthfulId = professorIds[truthfulIdx]
+
+    const selectedArticleTitle = data.players[truthfulId].articleTitle
 
     const updates = {
       phase: 'role-reveal',
       selectedArticleTitle,
     }
 
-    for (const [pid, roleData] of Object.entries(playerUpdates)) {
-      updates[`players/${pid}/role`] = roleData.role
+    for (const pid of professorIds) {
+      updates[`players/${pid}/role`] = pid === truthfulId ? 'truthful' : 'dubious'
     }
 
     await update(roomRef, updates)
   }, [])
 
-  // Advance to next phase (host/interrogator only)
   const advancePhase = useCallback(async (code, nextPhase) => {
-    await update(ref(db, `rooms/${code}`), {
-      phase: nextPhase,
-    })
+    await update(ref(db, `rooms/${code}`), { phase: nextPhase })
   }, [])
 
-  // Submit guess (interrogator only)
   const submitGuess = useCallback(async (code, guessedPlayerId) => {
     const roomRef = ref(db, `rooms/${code}`)
     const snapshot = await get(roomRef)
@@ -222,21 +272,17 @@ export function useGameState(playerId, roomCode) {
     })
   }, [])
 
-  // End round — return to lobby or home
   const endRound = useCallback(async (code) => {
     const roomRef = ref(db, `rooms/${code}`)
     const snapshot = await get(roomRef)
     const data = snapshot.val()
 
     if (data.settings.keepLobby) {
-      // Reset players but keep them in the room
       const updates = {
         phase: 'lobby',
         selectedArticleTitle: '',
         guess: null,
-        pausedAt: null,
-        previousPhase: null,
-        disconnectedPlayerId: null,
+        disconnectTimers: null,
       }
 
       for (const pid of Object.keys(data.players)) {
@@ -254,38 +300,36 @@ export function useGameState(playerId, roomCode) {
     }
   }, [])
 
-  // Pause game due to disconnect
-  const pauseGame = useCallback(async (code, disconnectedPid, currentPhase) => {
-    await update(ref(db, `rooms/${code}`), {
-      phase: 'paused',
-      pausedAt: serverTimestamp(),
-      previousPhase: currentPhase,
-      disconnectedPlayerId: disconnectedPid,
-    })
-  }, [])
-
-  // Leave room
   const leaveRoom = useCallback(async (code) => {
     await remove(ref(db, `rooms/${code}/players/${playerId}`))
   }, [playerId])
 
-  // Get current player's data
   const myPlayer = room?.players?.[playerId] || null
   const isHost = room?.hostId === playerId
+  const isInterrogator = myPlayer?.role === 'interrogator'
   const players = room?.players || {}
-  const playerList = Object.entries(players).map(([id, data]) => ({ id, ...data }))
+
+  // Sort players chronologically by join time
+  const playerList = Object.entries(players)
+    .map(([id, data]) => ({ id, ...data }))
+    .sort((a, b) => (a.joinedAt || 0) - (b.joinedAt || 0))
+
   const connectedPlayers = playerList.filter(p => p.connected !== false)
 
   return {
     room,
+    loading,
+    hasLoaded: hasLoadedOnce.current,
     error,
     myPlayer,
     isHost,
+    isInterrogator,
     players,
     playerList,
     connectedPlayers,
     createRoom,
     joinRoom,
+    getExistingNames,
     rejoinRoom,
     beginGame,
     selectArticle,
@@ -294,7 +338,6 @@ export function useGameState(playerId, roomCode) {
     advancePhase,
     submitGuess,
     endRound,
-    pauseGame,
     leaveRoom,
   }
 }

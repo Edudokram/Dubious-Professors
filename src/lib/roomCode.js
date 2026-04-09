@@ -1,9 +1,21 @@
-const CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no I/O/0/1 to avoid confusion
+// Curated list of funny 3-letter lobby codes.
+// Edit this list to add/remove codes.
+const CODES = [
+  'ASS', 'SUS', 'WTF', 'SMH', 'IDK', 'PEE', 'POO', 'NUT', 'AYO',
+  'BRB', 'LOL', 'YAP', 'CAP', 'MID', 'HOE', 'RAW'
+]
 
-export function generateRoomCode(length = 6) {
-  let code = ''
-  for (let i = 0; i < length; i++) {
-    code += CHARS[Math.floor(Math.random() * CHARS.length)]
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+function randomCode() {
+  return LETTERS[Math.floor(Math.random() * 26)]
+    + LETTERS[Math.floor(Math.random() * 26)]
+    + LETTERS[Math.floor(Math.random() * 26)]
+}
+
+export function generateRoomCode() {
+  if (Math.random() < 1/3) {
+    return CODES[Math.floor(Math.random() * CODES.length)]
   }
-  return code
+  return randomCode()
 }

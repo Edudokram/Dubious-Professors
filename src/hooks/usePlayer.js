@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 
 function generatePlayerId() {
   return Math.random().toString(36).substring(2, 15) + Date.now().toString(36)
@@ -17,9 +17,8 @@ export function usePlayer() {
     return sessionStorage.getItem('dp_playerName') || ''
   })
 
-  const [roomCode, setRoomCodeState] = useState(() => {
-    return sessionStorage.getItem('dp_roomCode') || null
-  })
+  // Room code starts null on refresh — user must explicitly rejoin
+  const [roomCode, setRoomCodeState] = useState(null)
 
   function setPlayerName(name) {
     sessionStorage.setItem('dp_playerName', name)
@@ -27,16 +26,10 @@ export function usePlayer() {
   }
 
   function setRoomCode(code) {
-    if (code) {
-      sessionStorage.setItem('dp_roomCode', code)
-    } else {
-      sessionStorage.removeItem('dp_roomCode')
-    }
     setRoomCodeState(code)
   }
 
   function clearSession() {
-    sessionStorage.removeItem('dp_roomCode')
     setRoomCodeState(null)
   }
 

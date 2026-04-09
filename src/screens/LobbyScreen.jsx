@@ -11,33 +11,33 @@ export default function LobbyScreen({ roomCode, players, isHost, onBeginGame }) 
       <div className="flex-1 flex flex-col items-center justify-center gap-8 w-full">
         <GameCode code={roomCode} />
 
-        <div className="text-sm font-light tracking-widest uppercase opacity-60">
-          {players.length} player{players.length !== 1 ? 's' : ''} connected
+        <div className="animate-fade-in text-xs font-medium tracking-widest uppercase text-[#666]">
+          {players.length} player{players.length !== 1 ? 's' : ''} in lobby
         </div>
 
         <PlayerList players={players} />
 
-        {isHost && (
-          <div className="mt-6 flex flex-col items-center gap-3">
-            {players.length < minPlayers && (
-              <p className="text-sm font-light opacity-50">
-                Need at least {minPlayers} players to start
-              </p>
-            )}
-            <Button
-              onClick={onBeginGame}
-              disabled={players.length < minPlayers}
-            >
-              Begin Game
-            </Button>
-          </div>
-        )}
-
-        {!isHost && (
-          <p className="text-sm font-light tracking-widest uppercase opacity-60 mt-6">
-            Waiting for host to start the game
-          </p>
-        )}
+        <div className="animate-fade-in mt-2 flex flex-col items-center gap-3 w-full max-w-xs" style={{ animationDelay: '300ms' }}>
+          {isHost ? (
+            <>
+              {players.length < minPlayers && (
+                <p className="text-xs text-[#666] text-center">
+                  Need at least {minPlayers} players
+                </p>
+              )}
+              <Button
+                onClick={onBeginGame}
+                disabled={players.length < minPlayers}
+              >
+                Begin Game
+              </Button>
+            </>
+          ) : (
+            <p className="text-sm text-[#666] text-center">
+              Waiting for host to lock in...
+            </p>
+          )}
+        </div>
       </div>
     </Layout>
   )

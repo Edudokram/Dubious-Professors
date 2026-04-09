@@ -1,92 +1,76 @@
-import { useState, useEffect } from 'react'
 import Layout from '../components/Layout'
 import Button from '../components/Button'
 
-export default function RoleRevealScreen({ myPlayer, selectedArticleTitle, isHost, onContinue }) {
-  const [acknowledged, setAcknowledged] = useState(false)
-
-  if (myPlayer.role === 'interrogator') {
-    return (
-      <Layout>
-        <div className="flex-1 flex flex-col items-center justify-center gap-8 text-center">
-          <h2 className="text-xl font-light tracking-[0.15em] uppercase">
-            You are the Interrogator
-          </h2>
-
-          <p className="font-light opacity-80 max-w-xs leading-relaxed">
-            The article being discussed is:
-          </p>
-
-          <p className="text-2xl font-light tracking-wide">
-            {selectedArticleTitle}
-          </p>
-
-          <p className="font-light opacity-60 max-w-xs leading-relaxed text-sm">
-            Question each professor to figure out who actually read this article.
-          </p>
-
-          {isHost && (
-            <Button onClick={onContinue} className="mt-4">
-              Begin Interrogation
-            </Button>
-          )}
-        </div>
-      </Layout>
-    )
+export default function RoleRevealScreen({ myPlayer, selectedArticleTitle, isInterrogator, onContinue }) {
+  const roleConfig = {
+    interrogator: {
+      title: 'You are the Interrogator',
+      color: 'text-blue-400',
+      bg: 'bg-blue-500/10 border-blue-500/20',
+    },
+    truthful: {
+      title: 'You are the Truthful Professor',
+      color: 'text-green-400',
+      bg: 'bg-green-500/10 border-green-500/20',
+    },
+    dubious: {
+      title: 'You are a Dubious Professor',
+      color: 'text-red-400',
+      bg: 'bg-red-500/10 border-red-500/20',
+    },
   }
 
-  if (myPlayer.role === 'truthful') {
-    return (
-      <Layout>
-        <div className="flex-1 flex flex-col items-center justify-center gap-8 text-center">
-          <h2 className="text-xl font-light tracking-[0.15em] uppercase">
-            You are the Truthful Professor
-          </h2>
+  const config = roleConfig[myPlayer.role]
 
-          <p className="font-light opacity-80 max-w-xs leading-relaxed">
-            The article being discussed should be what you have read.
-          </p>
-
-          <p className="text-2xl font-light tracking-wide">
-            {selectedArticleTitle}
-          </p>
-
-          <p className="font-light opacity-60 max-w-xs leading-relaxed text-sm">
-            Answer the Interrogator's questions honestly using what you read.
-          </p>
-        </div>
-      </Layout>
-    )
-  }
-
-  // Dubious professor
   return (
     <Layout>
-      <div className="flex-1 flex flex-col items-center justify-center gap-8 text-center">
-        <h2 className="text-xl font-light tracking-[0.15em] uppercase">
-          You are a Dubious Professor
-        </h2>
-
-        <p className="font-light opacity-80 max-w-xs leading-relaxed">
-          The article being discussed should NOT be what you have read.
-          Pretend you know everything about it.
-        </p>
-
-        <div className="space-y-4">
-          <div>
-            <p className="text-sm font-light opacity-50 uppercase tracking-widest">Article being discussed</p>
-            <p className="text-xl font-light tracking-wide">{selectedArticleTitle}</p>
-          </div>
-
-          <div>
-            <p className="text-sm font-light opacity-50 uppercase tracking-widest">Your article (for reference)</p>
-            <p className="text-lg font-light tracking-wide opacity-70">{myPlayer.articleTitle}</p>
-          </div>
+      <div className="flex-1 flex flex-col items-center justify-center gap-6 w-full text-center">
+        <div className={`animate-scale-in text-xs font-bold tracking-widest uppercase px-4 py-2 rounded-full border ${config.bg} ${config.color}`}>
+          {myPlayer.role}
         </div>
 
-        <p className="font-light opacity-60 max-w-xs leading-relaxed text-sm">
-          Bluff your way through the Interrogator's questions!
-        </p>
+        <h2 className={`animate-fade-in text-xl font-bold ${config.color}`} style={{ animationDelay: '150ms' }}>
+          {config.title}
+        </h2>
+
+        {myPlayer.role === 'interrogator' && (
+          <div className="animate-fade-in space-y-4" style={{ animationDelay: '300ms' }}>
+            <p className="text-sm text-[#888]">The article is:</p>
+            <p className="text-2xl font-bold text-white">{selectedArticleTitle}</p>
+            <p className="text-xs text-[#666] max-w-[280px]">
+              Figure out which professor actually read it.
+            </p>
+          </div>
+        )}
+
+        {myPlayer.role === 'truthful' && (
+          <div className="animate-fade-in space-y-4" style={{ animationDelay: '300ms' }}>
+            <p className="text-sm text-[#888]">You read this one. Answer honestly.</p>
+            <p className="text-2xl font-bold text-white">{selectedArticleTitle}</p>
+          </div>
+        )}
+
+        {myPlayer.role === 'dubious' && (
+          <div className="animate-fade-in space-y-5" style={{ animationDelay: '300ms' }}>
+            <div>
+              <p className="text-xs text-[#666] uppercase tracking-widest mb-1">Topic</p>
+              <p className="text-xl font-bold text-white">{selectedArticleTitle}</p>
+            </div>
+            <div className="bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3">
+              <p className="text-xs text-[#666] uppercase tracking-widest mb-1">What you actually read</p>
+              <p className="text-sm text-[#888]">{myPlayer.articleTitle}</p>
+            </div>
+            <p className="text-xs text-[#666] max-w-[280px] mx-auto text-center">
+              Pretend you read the topic article. Trust. Most real professors do this.
+            </p>
+          </div>
+        )}
+
+        {isInterrogator && (
+          <div className="animate-fade-in mt-4 w-full max-w-xs" style={{ animationDelay: '500ms' }}>
+            <Button onClick={onContinue}>Begin Interrogation</Button>
+          </div>
+        )}
       </div>
     </Layout>
   )

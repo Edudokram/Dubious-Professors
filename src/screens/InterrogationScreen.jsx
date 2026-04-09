@@ -1,49 +1,43 @@
-import { useEffect } from 'react'
 import Layout from '../components/Layout'
 import Button from '../components/Button'
-import TimerDisplay from '../components/Timer'
-import { useTimer } from '../hooks/useTimer'
 
 export default function InterrogationScreen({
   phase,
   myPlayer,
   selectedArticleTitle,
-  timerOn,
   isInterrogator,
   onDone,
 }) {
   const isPhase1 = phase === 'interrogation-1'
-  const duration = isPhase1 ? 10 : 60
-  const { secondsLeft, isRunning, start } = useTimer(duration, () => {
-    if (isInterrogator) onDone()
-  })
-
-  useEffect(() => {
-    if (timerOn) start()
-  }, [phase, timerOn, start])
 
   if (isInterrogator) {
     return (
       <Layout>
-        <div className="flex-1 flex flex-col items-center justify-center gap-8 text-center">
-          {timerOn && isRunning && (
-            <TimerDisplay secondsLeft={secondsLeft} />
-          )}
+        <div className="flex-1 flex flex-col items-center justify-center gap-6 text-center w-full">
+          <div className="animate-fade-in space-y-3">
+            <p className="text-sm text-[#888]">
+              {isPhase1
+                ? 'Ask each professor:'
+                : 'Get the full story from each professor.'
+              }
+            </p>
+            {isPhase1 && (
+              <p className="text-lg font-bold text-white">
+                "What is {selectedArticleTitle}?"
+              </p>
+            )}
+            {!isPhase1 && (
+              <p className="text-2xl font-bold text-white">
+                {selectedArticleTitle}
+              </p>
+            )}
+          </div>
 
-          <h2 className="text-lg font-light tracking-[0.1em] max-w-xs leading-relaxed">
-            {isPhase1
-              ? `Ask each professor, "What is ${selectedArticleTitle}?" (~10 seconds)`
-              : `Ask each professor for the full story (~1 minute)`
-            }
-          </h2>
-
-          <p className="text-2xl font-light tracking-wide">
-            {selectedArticleTitle}
-          </p>
-
-          <Button onClick={onDone} className="mt-4">
-            {isPhase1 ? 'Done' : 'End Interrogation'}
-          </Button>
+          <div className="animate-fade-in w-full max-w-xs mt-4" style={{ animationDelay: '200ms' }}>
+            <Button onClick={onDone}>
+              {isPhase1 ? 'Done' : 'End Interrogation'}
+            </Button>
+          </div>
         </div>
       </Layout>
     )
@@ -52,31 +46,31 @@ export default function InterrogationScreen({
   // Professor view
   return (
     <Layout>
-      <div className="flex-1 flex flex-col items-center justify-center gap-8 text-center">
-        {timerOn && isRunning && (
-          <TimerDisplay secondsLeft={secondsLeft} />
-        )}
+      <div className="flex-1 flex flex-col items-center justify-center gap-6 text-center w-full">
+        <div className={`animate-scale-in text-xs font-bold tracking-widest uppercase px-4 py-2 rounded-full border ${
+          myPlayer.role === 'truthful'
+            ? 'bg-green-500/10 border-green-500/20 text-green-400'
+            : 'bg-red-500/10 border-red-500/20 text-red-400'
+        }`}>
+          {myPlayer.role}
+        </div>
 
-        <h2 className="text-sm font-light tracking-[0.15em] uppercase opacity-60">
-          {myPlayer.role === 'truthful' ? 'Truthful Professor' : 'Dubious Professor'}
-        </h2>
-
-        <div className="space-y-4">
+        <div className="animate-fade-in space-y-4" style={{ animationDelay: '150ms' }}>
           <div>
-            <p className="text-sm font-light opacity-50 uppercase tracking-widest">Article being discussed</p>
-            <p className="text-xl font-light tracking-wide">{selectedArticleTitle}</p>
+            <p className="text-xs text-[#666] uppercase tracking-widest mb-1">Topic</p>
+            <p className="text-xl font-bold text-white">{selectedArticleTitle}</p>
           </div>
 
           {myPlayer.role === 'dubious' && (
-            <div>
-              <p className="text-sm font-light opacity-50 uppercase tracking-widest">Your article (reference)</p>
-              <p className="text-lg font-light tracking-wide opacity-70">{myPlayer.articleTitle}</p>
+            <div className="bg-[#1a1a1a] border border-[#333] rounded-xl px-4 py-3">
+              <p className="text-xs text-[#666] uppercase tracking-widest mb-1">What you read</p>
+              <p className="text-sm text-[#888]">{myPlayer.articleTitle}</p>
             </div>
           )}
         </div>
 
-        <p className="font-light opacity-40 text-sm">
-          {isPhase1 ? 'Waiting for interrogation to proceed...' : 'Answer the Interrogator\'s questions...'}
+        <p className="animate-fade-in text-xs text-[#555]" style={{ animationDelay: '300ms' }}>
+          {isPhase1 ? 'Give a quick summary when asked.' : 'Explain in detail when asked.'}
         </p>
       </div>
     </Layout>
