@@ -2,7 +2,7 @@
 // Edit this list to add/remove codes.
 const CODES = [
   'ASS', 'SUS', 'WTF', 'SMH', 'IDK', 'PEE', 'POO', 'NUT', 'AYO',
-  'BRB', 'LOL', 'YAP', 'CAP', 'MID', 'HOE', 'RAW'
+  'BRB', 'LOL', 'YAP', 'CAP', 'MID', 'HOE', 'RAW', 'CUM'
 ]
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
