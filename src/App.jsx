@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { usePlayer } from './hooks/usePlayer'
 import { useGameState } from './hooks/useGameState'
+import { pickFallbackName, isFallbackName } from './lib/fallbackNames'
 
 import HomeScreen from './screens/HomeScreen'
 import SettingsScreen from './screens/SettingsScreen'
@@ -45,6 +46,60 @@ export default function App() {
   const rejoinCode = sessionStorage.getItem('dp_rejoinCode')
   const rejoinTime = parseInt(sessionStorage.getItem('dp_rejoinTime') || '0', 10)
   const canRejoin = Boolean(rejoinCode) && (Date.now() - rejoinTime < 3 * 60 * 1000)
+
+  // --- HANDLERS ---
+  // Defined before render returns to avoid relying on JS function hoisting,
+  // which silently breaks if a future refactor changes these to `const handleX = ...`.
+
+  async function handleCreateRoom(name, settings) {
+    setPlayerName(name)
+    try {
+      const code = await gameState.createRoom(name, settings)
+      sessionStorage.setItem('dp_rejoinCode', code)
+      sessionStorage.setItem('dp_rejoinTime', Date.now().toString())
+      setRoomCode(code)
+    } catch (err) {
+      console.error('Failed to create room:', err)
+    }
+  }
+
+  async function handleJoinRoom(code, name, retriesLeft = 3) {
+    setJoinError(null)
+    try {
+      await gameState.joinRoom(code, name)
+      setPlayerName(name)
+      sessionStorage.setItem('dp_rejoinCode', code)
+      sessionStorage.setItem('dp_rejoinTime', Date.now().toString())
+      setRoomCode(code)
+    } catch (err) {
+      // If a blank-name fallback collided with another simultaneous joiner,
+      // silently retry with a fresh fallback rather than confusing the user
+      // with a "name already taken" error for a name they never typed.
+      if (err.message === 'Name already taken' && isFallbackName(name) && retriesLeft > 0) {
+        const freshNames = await gameState.getExistingNames(code)
+        const newName = pickFallbackName(freshNames)
+        return handleJoinRoom(code, newName, retriesLeft - 1)
+      }
+      setJoinError(err.message)
+      // If name error, stay on name screen. If room error, go back to code.
+      if (err.message === 'Room not found' || err.message === 'Game already in progress') {
+        setScreen('enterCode')
+      }
+    }
+  }
+
+  async function handleRejoin() {
+    const storedCode = sessionStorage.getItem('dp_rejoinCode')
+    if (!storedCode) return
+
+    try {
+      await gameState.rejoinRoom(storedCode)
+      setRoomCode(storedCode)
+    } catch (err) {
+      sessionStorage.removeItem('dp_rejoinCode')
+      console.error('Rejoin failed:', err)
+    }
+  }
 
   // --- PRE-GAME SCREENS ---
 
@@ -262,7 +317,8 @@ export default function App() {
         myPlayer={myPlayer}
         guess={room.guess}
         players={playerList}
-        isInterrogator={isInterrogator}
+        canAdvance={isInterrogator || isHost}
+        onFlagTitle={(title) => gameState.flagTitle(title)}
         onEndRound={() => {
           gameState.endRound(roomCode).then(result => {
             if (result === 'home') {
@@ -280,48 +336,4 @@ export default function App() {
   }
 
   return null
-
-  // --- HANDLERS ---
-
-  async function handleCreateRoom(name, settings) {
-    setPlayerName(name)
-    try {
-      const code = await gameState.createRoom(name, settings)
-      sessionStorage.setItem('dp_rejoinCode', code)
-      sessionStorage.setItem('dp_rejoinTime', Date.now().toString())
-      setRoomCode(code)
-    } catch (err) {
-      console.error('Failed to create room:', err)
-    }
-  }
-
-  async function handleJoinRoom(code, name) {
-    setJoinError(null)
-    try {
-      await gameState.joinRoom(code, name)
-      setPlayerName(name)
-      sessionStorage.setItem('dp_rejoinCode', code)
-      sessionStorage.setItem('dp_rejoinTime', Date.now().toString())
-      setRoomCode(code)
-    } catch (err) {
-      setJoinError(err.message)
-      // If name error, stay on name screen. If room error, go back to code.
-      if (err.message === 'Room not found' || err.message === 'Game already in progress') {
-        setScreen('enterCode')
-      }
-    }
-  }
-
-  async function handleRejoin() {
-    const storedCode = sessionStorage.getItem('dp_rejoinCode')
-    if (!storedCode) return
-
-    try {
-      await gameState.rejoinRoom(storedCode)
-      setRoomCode(storedCode)
-    } catch (err) {
-      sessionStorage.removeItem('dp_rejoinCode')
-      console.error('Rejoin failed:', err)
-    }
-  }
 }

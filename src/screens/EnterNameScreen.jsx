@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import Layout from '../components/Layout'
 import Button from '../components/Button'
+import { pickFallbackName } from '../lib/fallbackNames'
 
 export default function EnterNameScreen({ onSubmit, onCancel, existingNames = [], error: externalError }) {
   const [name, setName] = useState('')
@@ -8,22 +9,23 @@ export default function EnterNameScreen({ onSubmit, onCancel, existingNames = []
 
   const trimmed = name.trim()
   const isDuplicate = useMemo(
-    () => existingNames.some(n => n.toLowerCase() === trimmed.toLowerCase()),
+    () => trimmed.length > 0 && existingNames.some(n => n.toLowerCase() === trimmed.toLowerCase()),
     [trimmed, existingNames]
   )
   const isEmpty = trimmed.length === 0
 
   const displayError = localError || externalError || (isDuplicate ? 'That name is already taken' : '')
-  const isDisabled = isEmpty || isDuplicate
+  // Allow blank submit — empty is no longer an error, we'll pick a fallback.
+  const isDisabled = isDuplicate
 
   function handleSubmit(e) {
     e.preventDefault()
-    if (isEmpty) {
-      setLocalError('Name cannot be blank')
-      return
-    }
     if (isDuplicate) return
     setLocalError('')
+    if (isEmpty) {
+      onSubmit(pickFallbackName(existingNames))
+      return
+    }
     onSubmit(trimmed)
   }
 
@@ -40,7 +42,7 @@ export default function EnterNameScreen({ onSubmit, onCancel, existingNames = []
               onChange={(e) => { setName(e.target.value); setLocalError('') }}
               maxLength={20}
               autoFocus
-              placeholder="Enter name"
+              placeholder="Enter name (or leave blank)"
               className={`w-full bg-[#1a1a1a] border rounded-xl px-5 py-3 text-white text-center text-lg outline-none transition-colors placeholder:text-[#444] ${
                 displayError ? 'border-red-500/50' : 'border-[#333] focus:border-[#555]'
               }`}

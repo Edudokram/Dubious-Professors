@@ -1,6 +1,36 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { db, ref, set, get, update, onValue, onDisconnect, remove, serverTimestamp } from '../firebase'
+import { db, ref, set, get, update, onValue, onDisconnect, remove, serverTimestamp, increment } from '../firebase'
 import { generateRoomCode } from '../lib/roomCode'
+
+// Rooms older than this with no connected players are deleted on next createRoom.
+// Tuned conservatively: long enough not to nuke a slow party game, short enough
+// that the curated funny-code pool recycles within a day of abandonment.
+const STALE_ROOM_MS = 4 * 60 * 60 * 1000  // 4 hours
+
+// Firebase RTDB keys can't contain . # $ [ ] / — escape them reversibly so each
+// distinct title maps to a distinct, valid key. The readable title is also stored
+// in the value, so pull-feedback.mjs never has to decode the key.
+function feedbackKey(title) {
+  return title.replace(/[.#$/[\]]/g, (c) => `~${c.charCodeAt(0)}~`)
+}
+
+function findStaleRoomCodes(roomsData) {
+  if (!roomsData) return []
+  const now = Date.now()
+  const stale = []
+  for (const [code, room] of Object.entries(roomsData)) {
+    if (!room || typeof room !== 'object') continue
+    // Skip rooms with any currently-connected player (active game).
+    const players = room.players ? Object.values(room.players) : []
+    if (players.some((p) => p && p.connected === true)) continue
+    // Need a numeric timestamp to judge age. Skip pending/missing values.
+    const createdAt = room.createdAt
+    if (typeof createdAt !== 'number') continue
+    if (now - createdAt < STALE_ROOM_MS) continue
+    stale.push(code)
+  }
+  return stale
+}
 
 export function useGameState(playerId, roomCode) {
   const [room, setRoom] = useState(null)
@@ -74,9 +104,34 @@ export function useGameState(playerId, roomCode) {
   }, [roomCode, playerId])
 
   const createRoom = useCallback(async (hostName, settings) => {
-    const code = generateRoomCode()
+    // Fetch the universe of current rooms. We use this for two things:
+    //  1) Identify stale rooms to delete (frees up funny codes that would
+    //     otherwise be permanently consumed by abandoned test sessions).
+    //  2) Pass occupied codes to generateRoomCode so the funny-pool branch
+    //     can pick from codes that are actually free.
+    const allRoomsSnap = await get(ref(db, 'rooms'))
+    const allRooms = allRoomsSnap.exists() ? allRoomsSnap.val() : {}
+
+    const staleCodes = findStaleRoomCodes(allRooms)
+    if (staleCodes.length > 0) {
+      // Fire-and-forget — don't block room creation on cleanup network calls.
+      // Failures are non-fatal: another client will sweep them next time.
+      console.log(`[lobby cleanup] removing ${staleCodes.length} stale room(s):`, staleCodes)
+      for (const code of staleCodes) {
+        remove(ref(db, `rooms/${code}`)).catch(() => {})
+      }
+    }
+
+    // Treat stale codes as already-freed for the purposes of code selection,
+    // since we just queued their deletion.
+    const takenCodes = new Set(Object.keys(allRooms))
+    for (const code of staleCodes) takenCodes.delete(code)
+
+    const code = generateRoomCode(takenCodes)
     const roomRef = ref(db, `rooms/${code}`)
 
+    // Race-condition safety net: someone else may have grabbed this code
+    // between our read and write. Retry once if so.
     const existing = await get(roomRef)
     if (existing.exists()) {
       return createRoom(hostName, settings)
@@ -178,14 +233,18 @@ export function useGameState(playerId, roomCode) {
   }, [playerId])
 
   const beginGame = useCallback(async (code, randomRoles) => {
+    const roomRef = ref(db, `rooms/${code}`)
+    const snapshot = await get(roomRef)
+    const data = snapshot.val()
+    const playerIds = Object.keys(data.players)
+    // Only connected players are eligible for randomly-assigned roles —
+    // never select a disconnected ghost as Interrogator.
+    const connectedIds = playerIds.filter((id) => data.players[id].connected !== false)
+
     if (randomRoles) {
       // Assign interrogator now, before article selection
-      const roomRef = ref(db, `rooms/${code}`)
-      const snapshot = await get(roomRef)
-      const data = snapshot.val()
-      const playerIds = Object.keys(data.players)
-
-      const interrogatorId = playerIds[Math.floor(Math.random() * playerIds.length)]
+      const eligible = connectedIds.length > 0 ? connectedIds : playerIds
+      const interrogatorId = eligible[Math.floor(Math.random() * eligible.length)]
 
       const updates = {
         phase: 'article-selection',
@@ -198,11 +257,6 @@ export function useGameState(playerId, roomCode) {
       await update(roomRef, updates)
     } else {
       // Host is interrogator
-      const roomRef = ref(db, `rooms/${code}`)
-      const snapshot = await get(roomRef)
-      const data = snapshot.val()
-      const playerIds = Object.keys(data.players)
-
       const updates = {
         phase: 'article-selection',
       }
@@ -233,12 +287,15 @@ export function useGameState(playerId, roomCode) {
     const snapshot = await get(roomRef)
     const data = snapshot.val()
 
-    // Interrogator is already assigned. Now pick truthful from the professors.
+    // Interrogator is already assigned. Now pick truthful from the professors —
+    // but only from connected ones, never a disconnected ghost.
     const playerIds = Object.keys(data.players)
     const professorIds = playerIds.filter(id => data.players[id].role !== 'interrogator')
+    const eligibleProfessorIds = professorIds.filter(id => data.players[id].connected !== false)
+    const pool = eligibleProfessorIds.length > 0 ? eligibleProfessorIds : professorIds
 
-    const truthfulIdx = Math.floor(Math.random() * professorIds.length)
-    const truthfulId = professorIds[truthfulIdx]
+    const truthfulIdx = Math.floor(Math.random() * pool.length)
+    const truthfulId = pool[truthfulIdx]
 
     const selectedArticleTitle = data.players[truthfulId].articleTitle
 
@@ -272,6 +329,18 @@ export function useGameState(playerId, roomCode) {
     })
   }, [])
 
+  // Player feedback: flag a title as boring/too-famous. Accumulates downvotes in
+  // feedback/<key>; pull-feedback.mjs later folds high-vote titles into the deny
+  // list. Atomic server-side increment so concurrent flags from a lobby all count.
+  const flagTitle = useCallback(async (title) => {
+    if (!title) return
+    await update(ref(db, `feedback/${feedbackKey(title)}`), {
+      title,
+      downvotes: increment(1),
+      lastFlagged: serverTimestamp(),
+    })
+  }, [])
+
   const endRound = useCallback(async (code) => {
     const roomRef = ref(db, `rooms/${code}`)
     const snapshot = await get(roomRef)
@@ -302,6 +371,11 @@ export function useGameState(playerId, roomCode) {
 
   const leaveRoom = useCallback(async (code) => {
     await remove(ref(db, `rooms/${code}/players/${playerId}`))
+    // If we were the last player, delete the room so the code returns to the pool.
+    const playersSnap = await get(ref(db, `rooms/${code}/players`)).catch(() => null)
+    if (!playersSnap || !playersSnap.exists() || Object.keys(playersSnap.val()).length === 0) {
+      await remove(ref(db, `rooms/${code}`)).catch(() => {})
+    }
   }, [playerId])
 
   const myPlayer = room?.players?.[playerId] || null
@@ -337,6 +411,7 @@ export function useGameState(playerId, roomCode) {
     startRoleReveal,
     advancePhase,
     submitGuess,
+    flagTitle,
     endRound,
     leaveRoom,
   }
