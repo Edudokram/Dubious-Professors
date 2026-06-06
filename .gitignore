@@ -4,3 +4,11 @@ dist
 .env.*.local
 *.log
 .vercel
+
+# Pipeline working artifacts — large/regenerable. The shipped list
+# (src/data/curatedTitles*.json) IS committed; the raw corpus is not.
+scripts/output/
+
+# Stray/legacy root artifacts from earlier sessions
+v.decision
+titles_tagged.json
